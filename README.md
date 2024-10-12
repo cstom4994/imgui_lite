@@ -11,7 +11,7 @@ Lite itself can render the screen as a bitmap, which makes it possible to embed 
 ## Notice
 So far, ImLite only implements the rendering of the glfw opengl3 backend :(
 
-The code is very messy and has predictable memory leaks
+The code is very messy
 
 ## Demo
 Use xmake to compile and view example directly

@@ -112,24 +112,6 @@ char *tmp_fmt(const char *fmt, ...) {
     return s_buf;
 }
 
-std::string read_file_to_string(const std::string &filename) {
-    std::ifstream file(filename, std::ios::in | std::ios::binary);
-    if (!file.is_open()) {
-        throw std::runtime_error("Failed to open file: " + filename);
-    }
-    file.seekg(0, std::ios::end);
-    std::streamsize size = file.tellg();
-    if (size <= 0) {
-        throw std::runtime_error("File is empty or an error occurred while reading: " + filename);
-    }
-    file.seekg(0, std::ios::beg);
-    std::string contents(size, '\0');
-    if (!file.read(&contents[0], size)) {
-        throw std::runtime_error("Error occurred while reading file: " + filename);
-    }
-    return contents;
-}
-
 char *file_pathabs(const char *pathfile) {
     char *out = tmp_fmt("%*.s", DIR_MAX + 1, "");
 #ifdef NEKO_IS_WIN32
@@ -227,14 +209,30 @@ int lt_resizesurface(lt_surface *s, int ww, int wh) {
     return 0;  // unchanged
 }
 
-void *lt_load_file(const char *filename, int *size) {
-    static std::string contents = read_file_to_string(filename);
-    if (size) *size = 0;
+void *lt_load_file(const char *filename, int *ret_size) {
+    std::ifstream file(filename, std::ios::in | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open file");
+    }
+    file.seekg(0, std::ios::end);
+    std::streamsize size = file.tellg();
+    if (size <= 0) {
+        throw std::runtime_error("File is empty or an error occurred while reading");
+    }
+    file.seekg(0, std::ios::beg);
+    std::string contents(size, '\0');
+    if (!file.read(&contents[0], size)) {
+        throw std::runtime_error("Error occurred while reading file");
+    }
+    if (ret_size) *ret_size = 0;
     if (contents.empty()) {
         return NULL;
     }
-    if (size) *size = contents.length();
-    return (void *)contents.c_str();
+    size_t len = contents.length();
+    if (ret_size) *ret_size = len;
+    void *data = lt_malloc(len);
+    memcpy(data, contents.data(), len);
+    return data;
 }
 
 const char *lt_button_name(int button) {
@@ -930,7 +928,7 @@ int luaopen_renderer(lua_State *L) {
 #define CELL_SIZE 96
 #define COMMAND_BUF_SIZE (1024 * 512)
 
-enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT };
+enum { SET_CLIP, DRAW_TEXT, DRAW_RECT };
 
 typedef struct {
     int type, size;
@@ -1008,12 +1006,7 @@ static bool next_command(Command **prev) {
 
 void rencache_show_debug(bool enable) { show_debug = enable; }
 
-void rencache_free_font(RenFont *font) {
-    Command *cmd = push_command(FREE_FONT, sizeof(Command));
-    if (cmd) {
-        cmd->font = font;
-    }
-}
+void rencache_free_font(RenFont *font) { ren_free_font(font); }
 
 void rencache_set_clip_rect(RenRect rect) {
     Command *cmd = push_command(SET_CLIP, sizeof(Command));
@@ -1138,7 +1131,6 @@ void rencache_end_frame(void) {
     }
 
     // redraw updated regions
-    bool has_free_commands = false;
     for (int i = 0; i < rect_count; i++) {
         // draw
         RenRect r = rect_buf[i];
@@ -1147,9 +1139,6 @@ void rencache_end_frame(void) {
         cmd = NULL;
         while (next_command(&cmd)) {
             switch (cmd->type) {
-                case FREE_FONT:
-                    has_free_commands = true;
-                    break;
                 case SET_CLIP:
                     ren_set_clip_rect(intersect_rects(cmd->rect, r));
                     break;
@@ -1172,16 +1161,6 @@ void rencache_end_frame(void) {
     // update dirty rects
     if (rect_count > 0) {
         ren_update_rects(rect_buf, rect_count);
-    }
-
-    // free fonts
-    if (has_free_commands) {
-        cmd = NULL;
-        while (next_command(&cmd)) {
-            if (cmd->type == FREE_FONT) {
-                ren_free_font(cmd->font);
-            }
-        }
     }
 
     // swap cell buffer and reset
